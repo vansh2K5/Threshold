@@ -24,8 +24,24 @@ for _ in $(seq 1 60); do
 done
 
 echo "[smoke] starting an engagement against $TARGET"
-started="$(curl -fsS -X POST "$API/api/engagement" -H 'Content-Type: application/json' \
-  -d "{\"message\": \"assess $TARGET\"}")"
+# Retried, not a single shot: the orchestrator's very first real request
+# after startup also has to cold-start the HexStrike MCP adapter subprocess
+# (spawn + handshake), which can transiently 502 the first POST even though
+# GET /api/state above already answered fine — observed live, twice, in a
+# row. A second attempt moments later succeeds without any other change.
+started=""
+for _ in $(seq 1 5); do
+  if started="$(curl -fsS -X POST "$API/api/engagement" -H 'Content-Type: application/json' \
+    -d "{\"message\": \"assess $TARGET\"}")"; then
+    break
+  fi
+  echo "[smoke] engagement start failed (likely MCP cold-start) — retrying in 5s..."
+  sleep 5
+done
+if [ -z "$started" ]; then
+  echo "[smoke] FAIL: could not start an engagement after retries."
+  exit 1
+fi
 echo "$started"
 engagement_id="$(printf '%s' "$started" | python -c "import sys,json;print(json.load(sys.stdin)['id'])")"
 echo "[smoke] engagement id: $engagement_id"
