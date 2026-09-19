@@ -1,0 +1,24 @@
+Threshold
+Copyright 2026 The Threshold Authors
+
+This product includes software developed as part of the Threshold project,
+licensed under the Apache License, Version 2.0.
+
+-------------------------------------------------------------------------------
+Bundled / referenced third-party components
+-------------------------------------------------------------------------------
+
+HexStrike AI  (tool backend, in hexstrike-ai/)
+  Copyright (c) 2026 Muhammad Osama (0x4m4) <contact@0x4m4.com>
+  Licensed under the MIT License.
+  Source: https://github.com/0x4m4/hexstrike-ai
+  Vendored from upstream commit d689933ff579d839c676c82b231f8e98326c5f04
+
+Penetration-testing CLI tools (installed inside the hexstrike Docker image)
+  The Docker image for the "hexstrike" service installs numerous third-party
+  command-line security tools (for example nmap, sqlmap, nuclei, ffuf, and
+  others). Each such tool is the property of its respective authors and is
+  distributed under its OWN license (which for several tools is the GPL). Their
+  inclusion in a Docker image is a mere aggregation for convenience; Threshold
+  grants no rights over those tools, and users receive each tool under that
+  tool own upstream license terms. See each tool upstream project for details.

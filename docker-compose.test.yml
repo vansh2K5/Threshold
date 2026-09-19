@@ -1,0 +1,25 @@
+name: threshold
+
+# Test overlay: adds a deliberately vulnerable target (OWASP Juice Shop) on the
+# internal Compose network and authorizes only the Docker bridge range so that
+# target resolves in-scope. Use with the base file:
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml up --build
+
+services:
+  juice-shop:
+    image: bkimminich/juice-shop:latest
+    expose:
+      - "3000"
+    restart: unless-stopped
+
+  orchestrator:
+    environment:
+      # safety.assert_in_scope currently accepts ONE CIDR; this covers the
+      # default Compose 172.16.0.0/12 space so the bundled juice-shop target is
+      # authorized. Multi-CIDR support is Phase 3.
+      PENTEST_AGENTS_LAB_CIDR: "172.16.0.0/12"
+    depends_on:
+      hexstrike:
+        condition: service_healthy
+      juice-shop:
+        condition: service_started

@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.log
+hexstrike.log
+*_env/
+.venv/

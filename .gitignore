@@ -1,0 +1,34 @@
+# --- Python ---
+__pycache__/
+*.pyc
+.venv/
+*_env/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Secrets / runtime data (NEVER commit) ---
+.env
+data/
+*.db
+*.sqlite
+*.sqlite3
+.chroma/
+reports_out/
+*.log
+
+# --- Academic / non-release artifacts (keep out of the public repo) ---
+*.pdf
+*.pptx
+ecc-reference.html
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Claude Code local machine settings
+.claude/settings.local.json
+**/.claude/settings.local.json

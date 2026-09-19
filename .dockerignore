@@ -1,0 +1,19 @@
+# Keep the build context small — the orchestrator image only needs source.
+**/.git
+**/.venv
+**/*_env
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+**/.coverage
+**/htmlcov
+**/*.log
+**/.chroma
+**/reports_out
+**/data
+.env
+*.pdf
+*.pptx
+ecc-reference.html
+hexstrike-ai/assets

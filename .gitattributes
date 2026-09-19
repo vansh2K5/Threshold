@@ -1,0 +1,16 @@
+# Normalize line endings: repo stores LF. Critical so shell scripts and
+# Dockerfiles authored on Windows do not become CRLF and break inside Linux
+# containers.
+* text=auto eol=lf
+*.sh   text eol=lf
+*.py   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+Dockerfile text eol=lf
+*.j2   text eol=lf
+# Binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
