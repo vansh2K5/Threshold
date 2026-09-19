@@ -35,7 +35,16 @@ mitmproxy>=9.0.0,<11.0.0        # HTTP proxy (mitmproxy imports)
 # BINARY ANALYSIS (CONDITIONALLY USED)
 # ============================================================================
 pwntools>=4.10.0,<5.0.0         # Binary exploitation (from pwn import *)
-angr>=9.2.0,<10.0.0             # Binary analysis (import angr)
+angr==9.2.120                   # Binary analysis (import angr) — exact pin, not a
+                                 # range: with the rest of this file's pins, pip's
+                                 # resolver otherwise backtracks through 90+ point
+                                 # releases (9.2.213 down to 9.2.120) hunting for one
+                                 # whose exact-pinned siblings (archinfo/claripy/cle,
+                                 # which must match angr's own version) don't conflict
+                                 # with something else pinned here — observed taking
+                                 # 5+ minutes in a real build before this was pinned.
+                                 # Verified this exact version resolves cleanly
+                                 # (pip install --dry-run against this full file).
 bcrypt==4.0.1                   # Pin bcrypt version for passlib compatibility (fixes pwntools dependency issue)
 
 # ============================================================================

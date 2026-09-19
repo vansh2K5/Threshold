@@ -40,6 +40,10 @@ services:
       HEXSTRIKE_COMMAND: python
       PENTEST_AGENTS_MEMORY_PATH: /data/chroma
       PENTEST_AGENTS_REPORT_DIR: /data/reports
+      # Phase 2c: durable AsyncSqliteSaver checkpoint + engagements table,
+      # in the same bind-mounted volume as reports/chroma so engagements
+      # survive `docker compose restart orchestrator`.
+      PENTEST_AGENTS_DB_PATH: /data/threshold.db
     volumes:
       - ./data:/data
     depends_on:
