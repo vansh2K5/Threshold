@@ -145,38 +145,194 @@ project (the **Threshold** pentest-agent stack: `pentest-agents/` orchestrator +
     rewrite + concurrency-isolation proof + target-extraction parametrized
     cases), `test_coordinator.py` (async `get_state` calls).
 - Governing plan: `pentest-agents/.claude/plan/open-source-docker-release.md`.
+  New plan this session: `pentest-agents/.claude/plan/phase2d-3c-3d-hardening.md`
+  (2d completion + 3c/3d design + Phase 4/5 sequencing).
+- **Third LLM provider added: Groq** (`llm/provider.py`'s `GroqProvider`,
+  `openai/gpt-oss-20b`/`openai/gpt-oss-120b` — Groq's Llama-branded model ids
+  are gone from the current lineup, confirmed via a live `models.list()`
+  call). `POST /api/engagement` now takes an operator-selectable
+  `llm_provider` field (closes the "not yet operator-selectable" gap noted
+  below); the dashboard got a model picker (Gemini/Claude/Groq dropdown,
+  remembers the last choice) matching Claude Desktop's pattern.
+  - **Two real bugs found and fixed via a live Docker engagement run**
+    (`llm_provider="groq"` against the bundled Juice Shop):
+    1. Groq's GPT-OSS models 400 on the default tool-calling structured-
+       output method (`"Tool choice is required, but model did not call a
+       tool"`). Fixed: `GroqProvider.structured`/`astructured` use
+       `method="json_mode"` instead, with the target Pydantic schema
+       embedded in the prompt via `json.dumps()` (an f-string interpolation
+       of the raw dict emits Python repr — single quotes — which is not
+       valid JSON and confused the model into echoing the schema back
+       verbatim instead of an instance of it; both failure modes reproduced
+       and fixed in isolation before touching the real file).
+    2. `agents/post_exploit.py`'s prompt unconditionally claimed "a shell
+       was obtained" regardless of `exploit_result.shell_obtained`'s actual
+       value. Groq's model took the false premise literally and tried to
+       call a hallucinated `container.exec` tool, 400ing on Groq's stricter
+       tool-choice validation. Fixed: when no shell was obtained, skip the
+       LLM/tool call entirely and synthesize the "not applicable"
+       `PostExploitResult` deterministically — matches the project's
+       existing "never invent a plausible-looking result" rule better than
+       asking any model to reason from a false premise. This bug predates
+       Groq; Gemini/Claude likely just handled the contradiction more
+       leniently without erroring.
+  - **Two more things found live, not yet fixed (flagged, not silently
+    dropped):**
+    - The recon prompt mentions the full authorized CIDR alongside the
+      actual target; a model has twice (Groq, two different attempts) chosen
+      to scan the **entire** `172.16.0.0/12` range instead of the named
+      target (`masscan` once — hung until Part A's new tool-call timeout
+      correctly swallowed it into the transcript; `rustscan` once — failed
+      fast). Not yet fixed — the prompt should probably state only the
+      target, not the scope, or state both but more clearly disambiguated.
+    - **A crashed stage node leaves the engagement in an unresumable
+      "phantom paused" state.** When `run_post_exploit` raised the
+      unhandled 400 above (before the fix), `status_for_state` kept
+      reporting `"paused"` on `exploit` (its approval was genuinely
+      recorded), but the live checkpoint had no interrupt to resume from —
+      `POST .../approvals` for that stage returned `STAGE_MISMATCH:
+      engagement is currently finished`. The engagement was stuck; a fresh
+      one had to be started. Same root class as Phase 1's bug #3/#4
+      (`status_for_state` vs. the live-interrupt check disagreeing), but
+      this specific case wasn't covered by that fix. A generic fix — every
+      stage node exception routes to `state.halted_reason` the same way
+      `BudgetExceededError` now does, not just that one exception type —
+      would close it; not implemented this session (broader change than the
+      task in hand).
+    - **External constraint, not a bug:** Groq's free-tier `openai/gpt-oss-
+      20b` has an 8000 TPM limit; the recon role alone binds 44 HexStrike
+      tools (`tools/mcp_client.py`'s `ROLE_TOOLS["recon"]`), and their
+      combined function-calling schema alone needs ~9129 tokens — a single
+      recon call exceeds the model's per-minute budget outright, 413s.
+      Same shape as the earlier Gemini quota wall: external, not a code
+      gap. Groq is proven to work end-to-end (recon completed cleanly on
+      the run before this one, `llm_call_count: 2`, real tool-calling, real
+      structured output) — this is a free-tier ceiling on this specific
+      role's tool-set size, not a broken integration.
+- **Phase 2d: Part A (per-call timeouts + `max_llm_calls`) DONE.**
+  `budget.py` gained `BudgetExceededError` + 3 new `EngagementBudget` fields;
+  `agents/_common.py`'s `run_tool_assisted_step` now enforces both (a slow
+  *tool* call is swallowed into the transcript, same as a failing one — one
+  slow nmap scan shouldn't halt a healthy engagement; an LLM-call ceiling/
+  timeout is a hard halt, no fallback). `state.py` gained
+  `llm_call_count: int = 0` (must live on state, not a local var, so it
+  holds across replans — same lesson as `replan_count`). `coordinator.py`'s
+  stage→approval edge is now conditional on `halted_reason`, so a
+  mid-stage halt skips the human-approval interrupt entirely. Verified live
+  in Docker (the masscan-timeout case above), not just in unit tests.
+- **Phase 3a (multi-CIDR allowlist) DONE**, run largely as the pre-written
+  `docker-local-target-scope.md` plan specified — `safety.py`'s
+  `assert_in_scope` now accepts a comma-separated CIDR list, OR-membership,
+  fails closed on any empty/malformed entry. One correction to that plan's
+  own pseudocode found while implementing: validating CIDR entries must
+  happen **before** checking membership (all upfront), not lazily inside the
+  membership loop — the lazy version let a malformed *later* entry hide
+  behind a lucky match on an earlier valid one, defeating the point of
+  failing closed on a misconfiguration. Caught by a test, fixed before
+  landing.
+- **Phase 3b (full-URL target input), adapted from its pre-written plan:**
+  the plan assumed target extraction had no URL awareness yet, but
+  `api.py`'s `_extract_target` already handled full URLs (extracts the bare
+  host, confirmed by its own existing test). The real, still-open gap was
+  that embedded userinfo (`http://user:pass@host/`) was silently stripped
+  rather than rejected. Fixed: new `MalformedTargetError` → `422
+  MALFORMED_TARGET`, fails closed instead of silently dropping credentials.
+  Did **not** implement the plan's full URL-reconstruction/pinned-port
+  passthrough — recon does its own port discovery, so `state.target` staying
+  a bare hostname isn't a real gap for this pipeline's actual design.
+- **Nothing from this session is committed yet** — 21 files modified,
+  working tree dirty. `pytest -q` → **103 passed, 1 deselected**; `ruff
+  check` clean throughout.
 
 ## Next Steps (in order)
-1. **[USER] Get an unattended `scripts/smoke-test.sh` PASS on record** once
-   quota allows: wait for UTC-day reset, or provide a `GOOGLE_API_KEY` from
-   a genuinely different Google Cloud project (confirmed: the quota is
-   project-scoped — a second key under the same project won't help, already
-   tried), or set `ANTHROPIC_API_KEY` and switch the default provider (not
-   yet wired to be operator-selectable per engagement via the chat API —
-   `post_engagement` always starts with `gemini`; would need a small API/UI
-   change, or test via `coordinator.start_engagement(..., llm_provider=
-   "claude")` directly / the CLI in the meantime). The pipeline mechanics
-   are no longer in question — a full run already produced a real report
-   this session — this step is purely about getting the *unattended script*
-   itself a clean pass on record, since that's the literal Phase-4
-   automation this all leads to.
-2. **[CLAUDE] Finish 2d:** per-LLM/-tool-call timeouts + `max_llm_calls`
-   counter (needs a counter threaded through `agents/_common.py`'s tool loop,
-   not just the approval gate).
-3. Phase 3 (scope hardening + consent — the Critical DNS-rebinding item) →
-   Phase 4 (10× READY gate — 2a's concurrency isolation and 2c's restart
-   durability are now proven **live in Docker**, not just at the unit-test
-   level, so two of Phase 4's four proof obligations are substantially
-   de-risked already).
+1. **[CLAUDE] Fix the recon-prompt over-broad-scope issue** (state only the
+   named target in the prompt, not the full CIDR alongside it) — directly
+   caused two live tool-call misfires this session.
+2. **[CLAUDE] Generalize stage-node-exception handling**: route any
+   unhandled exception from a stage node to `state.halted_reason` (the same
+   mechanism `BudgetExceededError` already uses), not just that one
+   exception type — closes the "phantom paused, unresumable" gap found live
+   this session.
+3. **3c (resolve-and-pin — the Critical DNS-rebinding fix) + 3d (server-side
+   consent gate)** — both fully designed in
+   `pentest-agents/.claude/plan/phase2d-3c-3d-hardening.md`; 3c's downstream
+   pinned-IP propagation into tool args needs `tools/mcp_client.py` +
+   HexStrike's actual tool schema read before finalizing (flagged in the
+   plan, not guessed).
+4. **[USER, if Groq end-to-end matters]** Either reduce `recon`'s bound
+   tool-set size, or use `openai/gpt-oss-120b` / a paid Groq tier, or accept
+   Gemini/Claude for roles with large tool-sets and Groq for lighter ones —
+   the TPM ceiling is real and provider-inherent, not fixable in this repo's
+   code.
+5. Phase 4 (10× READY gate) — two more of its six checks are now provable
+   that weren't before this session (budget halting via Part A; scope
+   fail-closed via 3a), on top of the concurrency/restart proofs from
+   earlier sessions.
+6. **[USER]** The original unattended `scripts/smoke-test.sh` PASS is now
+   also unblocked a second way: `ANTHROPIC_API_KEY` is set, and the API's
+   `llm_provider` field is now operator-selectable (this session closed that
+   gap) — a smoke-test run with `"llm_provider": "claude"` no longer needs
+   the CLI workaround the previous entry described.
 
-> This session's code is committed and pushed. The pipeline works — proven
-> with real traffic against the real stack, including real failure and
-> recovery paths (which a lucky clean run wouldn't have exercised). The one
-> open item is external (LLM quota), not a code gap.
+> Nothing here is committed. The pipeline's resilience mechanisms (Part A's
+> timeout/ceiling guards, Phase 2c's restart durability) were exercised
+> against genuine live failures this session, not just unit tests — a
+> masscan-of-a-/12 hang was correctly contained, and a real restart mid-
+> engagement was survived. The two *not-yet-fixed* findings above are
+> flagged, not silently dropped.
 
 ---
 
 ## Session Log
+
+### 2026-09-20 14:57 — Groq provider (+2 live-found bugs) + Phase 2d Part A + 3a/3b
+- **User asks, in order:** resume from `session.md`; plan "the 2d and phase 3
+  and whats next"; supplied a Claude API key and a Groq API key directly in
+  chat; "give an option of all 3 AIs... like a grop down menu similar to
+  claude desktop"; "text the groq api once and if that works move on to next
+  phase"; "do the both recommendations" (run a live Groq engagement, and
+  implement 3a/3b).
+- **`/ecc:multi-plan` and `/ecc:multi-execute` both ran Claude-solo this
+  session** — Codex isn't installed on this machine (confirmed live, exit
+  127) and Antigravity hit `RESOURCE_EXHAUSTED` (individual quota, resets
+  ~2026-09-24). Plan saved to
+  `pentest-agents/.claude/plan/phase2d-3c-3d-hardening.md` regardless,
+  grounded in the real code read directly.
+- **Groq wired as a third provider**, dashboard model picker added — see
+  Current State for the full detail, including the two real bugs found and
+  fixed via live Docker engagement runs (Groq structured-output method, and
+  `post_exploit`'s false "shell was obtained" premise) and the two findings
+  flagged but not fixed (recon's over-broad scope prompt; the "phantom
+  paused" unresumable state after a crashed stage node).
+- **Phase 2d Part A, 3a, and 3b all implemented**, tests added for each —
+  see Current State. 3a's own pre-written plan had a bug (lazy CIDR
+  validation letting a malformed entry hide behind an earlier match), caught
+  by a test and fixed before landing.
+- **Live verification, not just unit tests:** rebuilt `threshold-orchestrator`
+  twice mid-session to pick up the Groq fixes; drove real engagements via
+  curl against the bundled Juice Shop through `docker compose`. Confirmed
+  live: Part A's tool-call timeout correctly contained a masscan-of-a-/12
+  hang (swallowed into the transcript, engagement continued rather than
+  hanging forever); Phase 2c's restart durability held again (an engagement
+  survived an orchestrator container recreate mid-run, still resumable).
+- **A frontend feature landed mid-turn** (the user sent it while Groq wiring
+  was in progress): the 3-provider dropdown in `web/index.html`/`app.js`/
+  `styles.css`, verified visually via `claude-in-chrome` against a locally
+  run `uvicorn` instance (all 3 options present, selection persists across
+  reloads via `localStorage`).
+- **Self-caught bug during Part A implementation:** the budget-check helper
+  in `agents/_common.py` originally took a pre-built coroutine, so a
+  rejected call left an unawaited coroutine (`RuntimeWarning` in the test
+  run). Fixed by passing a thunk instead, so the ceiling check runs before
+  the coroutine is ever constructed.
+- **Verification:** `pytest -q` → **103 passed, 1 deselected**; `ruff check`
+  clean throughout every fix in this entry.
+- **Nothing committed this session** — 21+ files modified, working tree
+  dirty. No git operations performed (not asked).
+- **Handoff:** see Next Steps. The two flagged-not-fixed findings (recon's
+  over-broad scope prompt; phantom-paused unresumable state) are the most
+  valuable pickup items — both are real, both are cheap to fix, neither was
+  in scope for the task as given this session.
 
 ### 2026-09-20 02:09 — Phase 1 MILESTONE ACHIEVED: full 5-stage engagement, real report
 - **User provided two fresh `GOOGLE_API_KEY` values** (pasted directly in
