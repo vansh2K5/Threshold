@@ -220,6 +220,12 @@ project (the **Threshold** pentest-agent stack: `pentest-agents/` orchestrator +
   stage→approval edge is now conditional on `halted_reason`, so a
   mid-stage halt skips the human-approval interrupt entirely. Verified live
   in Docker (the masscan-timeout case above), not just in unit tests.
+  **UPDATE (2026-09-20, later same day):** "swallowed into the transcript"
+  originally only abandoned the orchestrator's own await — it did **not**
+  stop the underlying HexStrike process. Found live (two orphaned `masscan
+  172.16.0.0/12 -p1-65535` processes still running hours later, degrading
+  the container for every subsequent engagement). Fixed — see that session
+  log entry and `mcp_client.reap_timed_out_processes`.
 - **Phase 3a (multi-CIDR allowlist) DONE**, run largely as the pre-written
   `docker-local-target-scope.md` plan specified — `safety.py`'s
   `assert_in_scope` now accepts a comma-separated CIDR list, OR-membership,
@@ -248,11 +254,10 @@ project (the **Threshold** pentest-agent stack: `pentest-agents/` orchestrator +
 1. **[CLAUDE] Fix the recon-prompt over-broad-scope issue** (state only the
    named target in the prompt, not the full CIDR alongside it) — directly
    caused two live tool-call misfires this session.
-2. **[CLAUDE] Generalize stage-node-exception handling**: route any
-   unhandled exception from a stage node to `state.halted_reason` (the same
-   mechanism `BudgetExceededError` already uses), not just that one
-   exception type — closes the "phantom paused, unresumable" gap found live
-   this session.
+2. ~~Generalize stage-node-exception handling~~ — **DONE**, committed
+   `57eb0c5`: `coordinator.py`'s `_safe_stage_node` now catches any
+   unhandled exception from a stage node and halts gracefully instead of
+   leaving a stuck "phantom paused" engagement.
 3. **3c (resolve-and-pin — the Critical DNS-rebinding fix) + 3d (server-side
    consent gate)** — both fully designed in
    `pentest-agents/.claude/plan/phase2d-3c-3d-hardening.md`; 3c's downstream
@@ -274,16 +279,71 @@ project (the **Threshold** pentest-agent stack: `pentest-agents/` orchestrator +
    gap) — a smoke-test run with `"llm_provider": "claude"` no longer needs
    the CLI workaround the previous entry described.
 
-> Nothing here is committed. The pipeline's resilience mechanisms (Part A's
-> timeout/ceiling guards, Phase 2c's restart durability) were exercised
-> against genuine live failures this session, not just unit tests — a
-> masscan-of-a-/12 hang was correctly contained, and a real restart mid-
-> engagement was survived. The two *not-yet-fixed* findings above are
-> flagged, not silently dropped.
+> This block is stale from the session that wrote it (it claimed "nothing
+> committed" — by the time the day ended, everything through item 2 above
+> plus three dashboard bug fixes and the process-reap fix had landed as
+> separate commits on `main`). Trust `git log`, not this paragraph, for
+> what's actually landed.
 
 ---
 
 ## Session Log
+
+### 2026-09-20 (later same day) — Orphaned HexStrike process leak, found + fixed live
+- **User asks, in order:** "restart the whole system please" (plain infra
+  restart, no code change); then pasted a dashboard error verbatim —
+  `Engagement halted: halted_llm_timeout. This is a terminal state...` plus
+  "timed out" — without further comment; "do all the fix and restart
+  everything one last time" once the root cause and proposed fix were
+  presented.
+- **Investigated the pasted error rather than taking it at face value.**
+  `GET /api/engagement/{id}` showed `llm_call_count: 1`, meaning the halt
+  happened on the very *first* Groq call (`llm.ainvoke(prompt)` in
+  `agents/_common.py`), before any tool ever ran for that engagement — so
+  the timeout wasn't Groq being slow on a real workload.
+  `docker logs threshold-hexstrike-1` showed continuous masscan progress
+  lines with a nonsensical ETA (19,000+ hours) still printing minutes after
+  that engagement started. `docker exec ... ps aux` confirmed it: **two
+  orphaned `masscan 172.16.0.0/12 -p1-65535` processes**, running since
+  ~10:33/10:34, left over from an earlier session's tool-call timeout
+  (Phase 2d Part A correctly gave up waiting on the orchestrator side and
+  swallowed it into the transcript — but never told HexStrike to actually
+  stop the process). Root cause: those two zombie scans were saturating the
+  hexstrike container's CPU/stdout pipe, which is what actually starved the
+  new engagement's first Groq round-trip past its 120s ceiling.
+- **Immediate mitigation:** killed both orphaned PIDs directly
+  (`docker exec ... kill -9`) to restore the container to a healthy state
+  before doing anything else.
+- **Root-cause fix:** `agents/_common.py`'s tool-call timeout branch now
+  also calls `mcp_client.reap_timed_out_processes(budget.tool_call_timeout_seconds)`
+  from a new `tools/mcp_client.py` function (kept there deliberately — that
+  file's docstring says it's "the only place HexStrike is touched," and the
+  reaper touches HexStrike's REST API too, so it stayed in the file that
+  invariant describes). The reaper calls HexStrike's own
+  `GET /api/processes/list` / `POST /api/processes/terminate/<pid>`
+  directly (bypassing MCP, since by construction the MCP round-trip is the
+  one that's stuck) and kills anything still `"running"` that has already
+  exceeded the same timeout budget — swept by runtime, not by correlating
+  to the one call that just timed out, so it also opportunistically cleans
+  up orphans from *other* concurrent engagements or earlier crashes, without
+  needing a tool-name→binary-name mapping across HexStrike's ~150 tools.
+  Best-effort by design: wrapped in a broad `except Exception` so a failed
+  reap (HexStrike REST unreachable, etc.) never masks the timeout it ran
+  after.
+- **Tests added** in `tests/test_mcp_client.py`: kills a process past
+  budget while leaving one still within budget and one already terminated
+  alone; confirms the reaper swallows a backend connection failure without
+  raising. Both use `httpx.MockTransport`, no real network calls.
+- **Verification:** `pytest -q` → **106 passed, 1 deselected**; `ruff check`
+  clean. Rebuilt `threshold-orchestrator` and restarted the full stack
+  (`hexstrike`, `juice-shop`, `orchestrator`) per the user's explicit "do
+  ... and restart everything one last time" — all three containers came up
+  healthy, `GET /api/state` responded normally afterward.
+- **Committed** per the standing instruction to auto-commit completed major
+  fixes without asking each time.
+- **Handoff:** the two items already flagged above (recon's over-broad
+  scope prompt; 3c/3d) are still the most valuable next pickups — untouched
+  this entry, out of scope for what was asked.
 
 ### 2026-09-20 14:57 — Groq provider (+2 live-found bugs) + Phase 2d Part A + 3a/3b
 - **User asks, in order:** resume from `session.md`; plan "the 2d and phase 3
