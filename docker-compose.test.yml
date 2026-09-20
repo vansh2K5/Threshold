@@ -14,10 +14,20 @@ services:
 
   orchestrator:
     environment:
-      # safety.assert_in_scope currently accepts ONE CIDR; this covers the
-      # default Compose 172.16.0.0/12 space so the bundled juice-shop target is
-      # authorized. Multi-CIDR support is Phase 3.
-      PENTEST_AGENTS_LAB_CIDR: "172.16.0.0/12"
+      # safety.assert_in_scope accepts a comma-separated CIDR list (Phase 3a).
+      # 172.16.0.0/12 covers the default Compose bridge space so the bundled
+      # juice-shop target is authorized. The three /32s are vulnweb.com's
+      # currently-resolved IPs (Acunetix's own intentionally-vulnerable test
+      # targets, explicitly published for security tools to scan):
+      #   44.228.249.3   -> vulnweb.com, testphp.vulnweb.com, testhtml5.vulnweb.com
+      #   44.238.29.244  -> testasp.vulnweb.com, testaspnet.vulnweb.com
+      #   18.215.71.186  -> rest.vulnweb.com
+      # These are live third-party hosts on the open internet, not a local
+      # container — resolved and pinned here rather than trusting a hostname
+      # at tool-call time, since DNS-rebinding protection (3c) isn't
+      # implemented yet. Re-resolve and update this list if vulnweb's
+      # infrastructure IPs change.
+      PENTEST_AGENTS_LAB_CIDR: "172.16.0.0/12,44.228.249.3/32,44.238.29.244/32,18.215.71.186/32"
     depends_on:
       hexstrike:
         condition: service_healthy

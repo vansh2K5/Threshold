@@ -50,7 +50,7 @@ RUN apt-get update && \
         nuclei amass subfinder \
         smbmap enum4linux nbtscan \
         libimage-exiftool-perl binwalk foremost steghide radare2 gdb \
-        seclists ; \
+        seclists metasploit-framework ; \
     fi \
  && rm -rf /var/lib/apt/lists/*
 
