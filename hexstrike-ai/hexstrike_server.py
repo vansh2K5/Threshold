@@ -52,6 +52,7 @@ from enum import Enum
 from typing import List, Set, Tuple
 import asyncio
 import aiohttp
+import msfrpc_client
 from urllib.parse import urljoin, urlparse, parse_qs
 from bs4 import BeautifulSoup
 import selenium
@@ -6674,6 +6675,36 @@ DEBUG_MODE = os.environ.get("DEBUG_MODE", "0").lower() in ("1", "true", "yes", "
 COMMAND_TIMEOUT = 300  # 5 minutes default timeout
 CACHE_SIZE = 1000
 CACHE_TTL = 3600  # 1 hour
+def _msf_session_wait_seconds() -> int:
+    """How long an msfconsole resource script waits after launching an
+    exploit job before checking `sessions -l` and exiting. Bounds a
+    reverse-payload callback window; must stay well under COMMAND_TIMEOUT.
+
+    Validated rather than a bare int(os.environ.get(...)) — that would crash
+    the whole app at import time on a malformed value, and an unbounded one
+    could exceed COMMAND_TIMEOUT and reintroduce the original hang this
+    module exists to fix.
+    """
+    raw = os.environ.get("MSF_SESSION_WAIT_SECONDS", "20")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            f"MSF_SESSION_WAIT_SECONDS={raw!r} is not a valid integer; using default 20"
+        )
+        return 20
+    # Leave real headroom below COMMAND_TIMEOUT for msfconsole's own
+    # startup/module-load/exit time, not just the sleep itself.
+    max_allowed = max(COMMAND_TIMEOUT - 60, 1)
+    if value < 1 or value > max_allowed:
+        logger.warning(
+            f"MSF_SESSION_WAIT_SECONDS={value} out of bounds [1, {max_allowed}]; clamping"
+        )
+        return min(max(value, 1), max_allowed)
+    return value
+
+
+MSF_SESSION_WAIT_SECONDS = _msf_session_wait_seconds()
 
 class HexStrikeCache:
     """Advanced caching system for command results"""
@@ -11056,6 +11087,55 @@ def sqlmap():
             "error": f"Server error: {str(e)}"
         }), 500
 
+# Matches one row of msfconsole's `sessions -l` table, e.g.:
+#   "  1         shell x86/linux                              10.0.0.5:4444 -> 10.0.0.10:53211 (10.0.0.10)"
+#   "  2         meterpreter x64/windows  NT AUTHORITY\\SYSTEM @ HOST  10.0.0.5:4444 -> 10.0.0.10:53211 (10.0.0.10)"
+# Rex::Ui::Text::Table (msfconsole's table renderer) always pads columns
+# with a >=2-space gutter regardless of content width, which the 2+-space
+# separators below rely on.
+_MSF_SESSION_ROW_RE = re.compile(
+    r"^\s*(?P<id>\d+)\s{2,}(?P<name>\S*)\s{2,}(?P<type>\S+(?:\s+\S+)?)"
+    r"\s{2,}(?P<info>.*?)\s{2,}(?P<connection>\S.*)$"
+)
+
+
+def parse_msf_sessions_table(stdout: str) -> list:
+    """Best-effort structured parse of an msfconsole `sessions -l` table.
+
+    Returns [] when no active sessions are present in the captured output —
+    callers must treat that as authoritative ("no session was established"),
+    never as a parse failure to paper over. This is the real signal exploit.py
+    uses to decide shell_obtained instead of free-associating from prose.
+
+    Only scans stdout *after* the "Active sessions" header `sessions -l`
+    itself prints, not the whole captured output — the same stdout also
+    contains the exploit module's own progress log (module load, `set`
+    confirmations, handler/job-start messages), and scanning that too risked
+    a coincidentally table-shaped line (a numbered progress line, etc.)
+    being mistaken for a session row. No header found means no session table
+    was actually printed, so this fails closed to [] rather than scanning
+    unrelated log lines on a guess.
+    """
+    header_index = stdout.rfind("Active sessions")
+    if header_index == -1:
+        return []
+    sessions = []
+    for line in stdout[header_index:].splitlines():
+        match = _MSF_SESSION_ROW_RE.match(line)
+        if not match:
+            continue
+        session_type_field = match.group("type")
+        session_type = "meterpreter" if "meterpreter" in session_type_field.lower() else "shell"
+        sessions.append({
+            "id": match.group("id"),
+            "type": session_type,
+            "raw_type": session_type_field.strip(),
+            "info": match.group("info").strip(),
+            "connection": match.group("connection").strip(),
+        })
+    return sessions
+
+
 @app.route("/api/tools/metasploit", methods=["POST"])
 def metasploit():
     """Execute metasploit module with enhanced logging"""
@@ -11070,27 +11150,53 @@ def metasploit():
                 "error": "Module parameter is required"
             }), 400
 
-        # Create an MSF resource script
+        # Create an MSF resource script.
+        #
+        # IMPORTANT: this script MUST end with `exit -y`. Without it,
+        # msfconsole drops to an interactive prompt after `exploit` and
+        # blocks reading stdin until COMMAND_TIMEOUT kills it — every call,
+        # regardless of exploit outcome. `exploit -j -z` runs the module as
+        # a background job so the console doesn't block waiting on a
+        # foreground session interaction; `sleep` (a resource-script-only
+        # msfconsole builtin) then gives a reverse-payload callback a bounded
+        # window to arrive before `sessions -l` prints the authoritative,
+        # parseable session table the caller actually needs.
         resource_content = f"use {module}\n"
         for key, value in options.items():
             resource_content += f"set {key} {value}\n"
-        resource_content += "exploit\n"
+        resource_content += (
+            "set ExitOnSession false\n"
+            "exploit -j -z\n"
+            f"sleep {MSF_SESSION_WAIT_SECONDS}\n"
+            "sessions -l\n"
+            "exit -y\n"
+        )
 
-        # Save resource script to a temporary file
-        resource_file = "/tmp/mcp_msf_resource.rc"
-        with open(resource_file, "w") as f:
-            f.write(resource_content)
-
-        command = f"msfconsole -q -r {resource_file}"
-
-        logger.info(f"🚀 Starting Metasploit module: {module}")
-        result = execute_command(command)
-
-        # Clean up the temporary file
+        # Per-call temp file (was a single hardcoded path shared by every
+        # concurrent call, which let two engagements stomp each other's
+        # resource script). resource_file starts as None and the whole
+        # creation-through-cleanup lifecycle lives in one try/finally, so a
+        # failure at any point — including during creation/write itself, not
+        # just during execute_command — can never leak the file.
+        resource_file = None
         try:
-            os.remove(resource_file)
-        except Exception as e:
-            logger.warning(f"Error removing temporary resource file: {str(e)}")
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".rc", prefix="mcp_msf_resource_", delete=False
+            ) as f:
+                f.write(resource_content)
+                resource_file = f.name
+
+            command = f"msfconsole -q -r {resource_file}"
+
+            logger.info(f"🚀 Starting Metasploit module: {module}")
+            result = execute_command(command)
+            result["sessions"] = parse_msf_sessions_table(result.get("stdout", ""))
+        finally:
+            if resource_file is not None:
+                try:
+                    os.remove(resource_file)
+                except Exception as e:
+                    logger.warning(f"Error removing temporary resource file: {str(e)}")
 
         logger.info(f"📊 Metasploit module completed: {module}")
         return jsonify(result)
@@ -11099,6 +11205,58 @@ def metasploit():
         return jsonify({
             "error": f"Server error: {str(e)}"
         }), 500
+
+
+# --- Phase B2: persistent Metasploit session tooling (msfrpcd-backed) ---
+# These three routes are the only way anything outside this file talks to a
+# LIVE Metasploit session — sessions created via /api/tools/metasploit above
+# don't survive that resource script's own msfconsole process exiting, but
+# msfrpcd (started by docker-entrypoint.sh) is one long-lived framework
+# instance, so a session opened by one call is still here for these routes
+# minutes later. Deliberately thin: list/exec-one-command/kill, no freeform
+# interactive TTY — matches the one-command-per-human-approval model the
+# orchestrator's post_exploit agent uses these through.
+
+@app.route("/api/msf-rpc/sessions", methods=["GET"])
+def msf_rpc_sessions():
+    """List live Metasploit sessions from the persistent msfrpcd instance."""
+    try:
+        sessions = msfrpc_client.list_sessions()
+        return jsonify({"success": True, "sessions": sessions})
+    except msfrpc_client.MsfRpcError as e:
+        logger.error(f"💥 msfrpcd session.list failed: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 502
+
+
+@app.route("/api/msf-rpc/sessions/<session_id>/exec", methods=["POST"])
+def msf_rpc_session_exec(session_id):
+    """Run ONE command inside a live session and return what it printed
+    back. Not interactive — one command per call, by design (see module
+    docstring above)."""
+    params = request.json or {}
+    command = params.get("command", "")
+    if not command:
+        return jsonify({"success": False, "error": "command parameter is required"}), 400
+    try:
+        output = msfrpc_client.run_command_in_session(session_id, command)
+        logger.info(f"🖥️  Ran command in session {session_id}: {command!r}")
+        return jsonify({"success": True, "output": output})
+    except msfrpc_client.MsfRpcError as e:
+        logger.error(f"💥 msfrpcd session exec failed for session {session_id}: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 502
+
+
+@app.route("/api/msf-rpc/sessions/<session_id>/kill", methods=["POST"])
+def msf_rpc_session_kill(session_id):
+    """Terminate a live session."""
+    try:
+        msfrpc_client.kill_session(session_id)
+        logger.info(f"🛑 Killed session {session_id}")
+        return jsonify({"success": True})
+    except msfrpc_client.MsfRpcError as e:
+        logger.error(f"💥 msfrpcd session kill failed for session {session_id}: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 502
+
 
 @app.route("/api/tools/hydra", methods=["POST"])
 def hydra():

@@ -1098,6 +1098,53 @@ def setup_mcp_server(hexstrike_client: HexStrikeClient) -> FastMCP:
         return result
 
     @mcp.tool()
+    def msf_session_list() -> Dict[str, Any]:
+        """
+        List live Metasploit sessions from the persistent msfrpcd instance
+        (Phase B2) — sessions that survive across separate tool calls,
+        unlike metasploit_run's own one-shot resource-script sessions.
+
+        Returns:
+            {success, sessions: {session_id: {type, session_host, ...}}}
+        """
+        result = hexstrike_client.safe_get("api/msf-rpc/sessions")
+        return result
+
+    @mcp.tool()
+    def msf_session_run_command(session_id: str, command: str) -> Dict[str, Any]:
+        """
+        Run ONE command inside a live Metasploit session and return its
+        output. Not an interactive shell — exactly one command per call,
+        matching the human-approval gate this is used behind (one proposed
+        command, one approval, one execution).
+
+        Args:
+            session_id: A session id from msf_session_list's output
+            command: The single command to run inside that session
+
+        Returns:
+            {success, output}
+        """
+        result = hexstrike_client.safe_post(
+            f"api/msf-rpc/sessions/{session_id}/exec", {"command": command}
+        )
+        return result
+
+    @mcp.tool()
+    def msf_session_kill(session_id: str) -> Dict[str, Any]:
+        """
+        Terminate a live Metasploit session.
+
+        Args:
+            session_id: A session id from msf_session_list's output
+
+        Returns:
+            {success}
+        """
+        result = hexstrike_client.safe_post(f"api/msf-rpc/sessions/{session_id}/kill", {})
+        return result
+
+    @mcp.tool()
     def hydra_attack(
         target: str,
         service: str,

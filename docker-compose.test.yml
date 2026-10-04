@@ -27,7 +27,9 @@ services:
       # at tool-call time, since DNS-rebinding protection (3c) isn't
       # implemented yet. Re-resolve and update this list if vulnweb's
       # infrastructure IPs change.
-      PENTEST_AGENTS_LAB_CIDR: "172.16.0.0/12,44.228.249.3/32,44.238.29.244/32,18.215.71.186/32"
+      # 192.168.1.4/32 — operator's own authorized lab host (a Windows/SMB box
+      # on the physical LAN), added on explicit request and confirmed as theirs.
+      PENTEST_AGENTS_LAB_CIDR: "172.16.0.0/12,44.228.249.3/32,44.238.29.244/32,18.215.71.186/32,192.168.1.4/32"
     depends_on:
       hexstrike:
         condition: service_healthy

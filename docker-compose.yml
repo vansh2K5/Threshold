@@ -46,6 +46,11 @@ services:
       PENTEST_AGENTS_DB_PATH: /data/threshold.db
     volumes:
       - ./data:/data
+      # Serve the dashboard + landing page from source (read-only) so frontend
+      # edits show without an image rebuild and survive container recreates —
+      # otherwise the baked-in copies silently revert any web/ change on recreate.
+      - ./pentest-agents/web:/app/web:ro
+      - ./pentest-agents/landing:/app/landing:ro
     depends_on:
       hexstrike:
         condition: service_healthy

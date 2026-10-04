@@ -66,8 +66,13 @@ COPY requirements.txt /opt/hexstrike/requirements.txt
 RUN python3.13 -m pip install --no-cache-dir --break-system-packages --ignore-installed \
       -r requirements.txt
 COPY hexstrike_server.py /opt/hexstrike/hexstrike_server.py
+COPY msfrpc_client.py /opt/hexstrike/msfrpc_client.py
+COPY docker-entrypoint.sh /opt/hexstrike/docker-entrypoint.sh
+RUN chmod +x /opt/hexstrike/docker-entrypoint.sh
 
 EXPOSE 8888
 HEALTHCHECK --interval=10s --timeout=5s --retries=18 --start-period=30s \
   CMD curl -fsS http://localhost:8888/health || exit 1
-CMD ["python3.13", "hexstrike_server.py"]
+# Starts msfrpcd (Phase B2 — persistent Metasploit sessions across separate
+# HTTP calls) alongside the Flask server; see docker-entrypoint.sh.
+ENTRYPOINT ["/opt/hexstrike/docker-entrypoint.sh"]
