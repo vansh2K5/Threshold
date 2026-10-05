@@ -336,6 +336,56 @@ project (the **Threshold** pentest-agent stack: `pentest-agents/` orchestrator +
 
 ## Session Log
 
+### 2026-10-05 — PLAN.md Phase 0 gate + Phase 1 + Phase 2 (DNS resolve-and-pin)
+- **Scope:** executed PLAN.md through Phase 0 (preflight/baseline), Phase 1
+  (recon tool-calling reliability), and Phase 2 (DNS-rebinding resolve-and-pin),
+  then stopped before Phase 3 for a checkpoint (new surface), per the operator's
+  pasted instructions. Decisions 1–4 and the plan corrections in that message
+  were applied.
+- **Phase 0 gate — GREEN.** Both images rebuilt to HEAD and verified
+  byte-for-byte matching their tags (the stale-image footgun bit again first:
+  the old orchestrator container was still on a Sep-21 image). Host port 8000
+  was held by an unrelated project (`crime-branch-os-app-1`), so the stack ran
+  on 8001 via a session-local compose overlay — reversible, nothing else
+  touched. Baseline `pytest` 498 passed / ruff clean. One live Juice Shop
+  engagement ran all 5 stages to `done` with a real report on the volume
+  (`/data/reports/engagement_juice-shop_1791211858.md`), driven with
+  `llm_provider=openai` (operator supplied a valid key; the stored
+  GOOGLE_API_KEY was invalid — 401, an OAuth-token-shaped value, not an AIza…
+  key). A client-side retry loop initially spawned duplicate engagements
+  because each POST blocks on slow recon while the server keeps going — fixed by
+  a poll-don't-retry driver that touches a single id.
+- **Phase 1 (item 6 only; item 5 already shipped).** `run_tool_assisted_step`
+  gained opt-in `require_tool_call`: a tool-bearing stage making zero tool calls
+  is re-prompted exactly once, then routed to re-plan (FindingsParseError)
+  BEFORE synthesis so an empty transcript can't become fabricated findings.
+  recon opts in. Added a regression test locking in that `lab_cidr` never
+  reaches the recon prompt (item 5), plus the no-tool-calls path tests.
+  Committed `9f0347b`. Suite 501 passed, ruff clean.
+- **Phase 2 (DNS resolve-and-pin / 3c), defense-in-depth per decision 4,
+  orchestrator-side layers.** New immutable `PipelineState.pinned_ip`, resolved
+  once at engagement creation (api.py → registry.start → start_engagement) and
+  never re-resolved or mutated for the engagement's life (coordinator test
+  proves it survives a resume). Execution-time backstop in `_common.py`:
+  before every tool call, re-resolve the target and refuse the call if it no
+  longer maps to the pinned IP — the airtight TOCTOU closure, keyed off the
+  hostname's resolution so it holds regardless of which arg a tool targets by.
+  Tests: rebinding simulation (safe IP at check, different IP at execution →
+  tool never executes), matching-pin allows, no-pin skips enforcement, the four
+  resolve_target outcomes, and pin-written-once. Suite 508 passed, ruff clean.
+  Live-verified: a real engagement pinned `172.18.0.2` (juice-shop) at creation
+  and recon ran through the guard to the approval gate without false-refusal.
+- **Deferred remainder of Phase 2 (the checkpoint):** the other two decision-4
+  layers — the per-engagement hosts-file override in the hexstrike container and
+  passing the pinned IP directly to address-targeting tools — are NOT yet done.
+  The execution-time re-validation above is the primary, fully-tested TOCTOU
+  closure; those two are additional hardening for tools that run their own
+  resolver. Also not done: persisting `pinned_ip` to the companion engagements
+  table (it lives on checkpointed PipelineState, the enforcement source).
+- **Not committed by this entry yet:** Phase 2 diff (5 source + 3 test files)
+  and this journal entry — committed together right after this was written.
+  PLAN.md and CODEBASE_ANALYSIS.md remain untracked (docs refresh is Phase 6).
+
 ### 2026-09-22 (later same day, fifth entry) — Phase B2: persistent msfrpcd session tooling
 - **User ask:** "Implement the Remaining Phases too, we will trouble shoot
   later" — mid-flight, while a scope-consent live-validation call was still
