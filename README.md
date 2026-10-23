@@ -33,29 +33,52 @@ gate (10× end-to-end + concurrency/restart/budget/scope) passes.
   card required — or an Anthropic API key.
 - ~a few GB of disk for the tool image on first build.
 
-## Quickstart (try it against the bundled target)
+## Quickstart
 
 ```bash
 # 1. Configure
 cp .env.example .env
 # edit .env and set GOOGLE_API_KEY=...
 
-# 2. Bring up the stack + a deliberately vulnerable target (OWASP Juice Shop)
-docker compose -f docker-compose.yml -f docker-compose.test.yml up --build
+# 2. Bring up the app; the local target stays off until you enable it
+docker compose up --build -d
 
 # 3. Open the dashboard
-#    http://localhost:8000/dashboard/
-#    Start an engagement against:  http://juice-shop:3000/
-#    Approve each stage as it is proposed.
+#    http://127.0.0.1:8000/dashboard/
 ```
 
-A scripted single-run smoke test is provided at
-[`scripts/smoke-test.sh`](scripts/smoke-test.sh).
+In **Authorized IP scope**, enter the IP address or CIDR ranges you own or have
+permission to assess, then save. The setting is stored in the local SQLite data
+directory and is used by the server for every new engagement. Changing scope is
+blocked while an engagement is active. The app binds to `127.0.0.1` so the scope
+editor is not exposed to other devices on your network.
+
+### Optional isolated web lab
+
+The OWASP Juice Shop target is disabled by default. Enable it when you want a
+local practice target:
+
+```bash
+docker compose --profile lab up -d juice-shop-web
+```
+
+From the host, open `http://127.0.0.1:3000`. In Threshold, first add
+`172.30.255.10/32` to the authorized scope, then enter `172.30.255.10` as the
+target. Juice Shop lives on an internal Docker network without outbound access.
+A small Nginx proxy publishes its web page on host loopback only.
+
+Turn the lab off with:
+
+```bash
+docker compose --profile lab stop juice-shop-web juice-shop
+```
 
 ## Point it at your own lab
 
-Edit `.env` and set `PENTEST_AGENTS_LAB_CIDR` to the subnet of the authorized
-targets you control, then:
+Set the scope in the dashboard to the IP address or CIDR range of targets you
+control. You can also use `PENTEST_AGENTS_LAB_CIDR` in `.env` to seed the scope
+on a fresh install; once saved in the dashboard, the persisted setting takes
+precedence:
 
 ```bash
 docker compose up --build
@@ -64,10 +87,11 @@ docker compose up --build
 Threshold refuses any target that does not resolve inside that CIDR.
 
 > **Windows / macOS note:** Docker Desktop runs containers in a Linux VM, so
-> `127.0.0.1` inside a container is **not** your host machine. To scan something
-> on your host, expose it on a reachable IP or run it as a Compose service (that
-> is how the bundled Juice Shop target works). This is why the default authorized
-> range targets the Docker network, not loopback.
+> `127.0.0.1` inside a container is **not** your host machine. To scan a service
+> running on your host, use a host IP reachable from Docker and include that IP
+> in the dashboard scope. Host firewalls may need to allow the connection. The
+> optional Juice Shop service avoids that routing issue by running on the
+> private Compose network.
 
 ## Architecture
 
@@ -97,7 +121,7 @@ See [`.env.example`](.env.example). Key variables:
 |---|---|
 | `GOOGLE_API_KEY` / `ANTHROPIC_API_KEY` | LLM provider credential |
 | `PENTEST_AGENTS_MODE` | `dev` (cheap/fast model) or `eval` (stronger) |
-| `PENTEST_AGENTS_LAB_CIDR` | The authorized target scope (fail-closed) |
+| `PENTEST_AGENTS_LAB_CIDR` | Initial authorized scope (dashboard setting persists afterward) |
 | `HEXSTRIKE_TOOLSET` | `curated` (smaller image) or `full` |
 
 ## Contributing

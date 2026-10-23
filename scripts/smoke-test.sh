@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Threshold Phase-1 smoke test: bring the stack up and drive ONE engagement
-# against the bundled Juice Shop, auto-approving each stage, until a report
+# against the optional local Juice Shop, auto-approving each stage, until a report
 # exists. Requires Docker + a GOOGLE_API_KEY (or ANTHROPIC_API_KEY) in .env.
 #
+# Before running, enable the lab and add 172.30.255.10/32 to the dashboard scope.
 # This is the SINGLE-run Phase-1 milestone check only. The full 10x READY gate
 # is Phase 4 and is not implemented yet.
 #
@@ -11,11 +12,11 @@
 # after being run live against that API for the first time.
 set -euo pipefail
 
-API="${THRESHOLD_API:-http://localhost:8000}"
-TARGET="${THRESHOLD_TARGET:-http://juice-shop:3000/}"
+API="${THRESHOLD_API:-http://127.0.0.1:8000}"
+TARGET="${THRESHOLD_TARGET:-172.30.255.10}"
 
 echo "[smoke] bringing the stack up (first build can take a long time)..."
-docker compose -f docker-compose.yml -f docker-compose.test.yml up -d --build
+docker compose --profile lab up -d --build
 
 echo "[smoke] waiting for the orchestrator to answer at $API ..."
 for _ in $(seq 1 60); do
