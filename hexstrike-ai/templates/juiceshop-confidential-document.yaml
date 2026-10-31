@@ -1,0 +1,22 @@
+id: juiceshop-confidential-document-exposure
+
+info:
+  name: OWASP Juice Shop confidential acquisitions document exposed
+  author: Threshold
+  severity: medium
+  description: A document explicitly marked confidential is served without authentication.
+  tags: juiceshop,exposure,disclosure
+
+http:
+  - method: GET
+    path:
+      - "{{RootURL}}/ftp/acquisitions.md"
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+      - type: word
+        part: body
+        words:
+          - "This document is confidential!"

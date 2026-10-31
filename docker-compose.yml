@@ -11,6 +11,9 @@ services:
         TOOLSET: ${HEXSTRIKE_TOOLSET:-curated}
     expose:
       - "8888"
+    volumes:
+      - ./hexstrike-ai/hexstrike_server.py:/opt/hexstrike/hexstrike_server.py:ro
+      - ./hexstrike-ai/templates:/opt/hexstrike/templates:ro
     networks:
       - default
       - target_lab

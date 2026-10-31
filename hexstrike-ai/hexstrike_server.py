@@ -9873,7 +9873,11 @@ def execute_nuclei_scan(target, params):
         tags = params.get('tags', '')
         additional_args = params.get('additional_args', '')
 
-        cmd_parts = ['nuclei', '-u', target]
+        cmd_parts = [
+            'nuclei', '-u', target,
+            '-t', '/opt/hexstrike/templates',
+            '-duc',
+        ]
         if severity:
             cmd_parts.extend(['-severity', severity])
         if tags:
@@ -9900,7 +9904,9 @@ def execute_nikto_scan(target, params):
 def execute_sqlmap_scan(target, params):
     """Execute sqlmap scan with optimized parameters"""
     try:
-        additional_args = params.get('additional_args', '--batch --random-agent')
+        additional_args = params.get(
+            'additional_args', '--batch --random-agent --crawl=2 --forms'
+        )
         cmd_parts = ['sqlmap', '-u', target]
         if additional_args:
             cmd_parts.extend(additional_args.split())
@@ -10454,7 +10460,7 @@ def nuclei():
                 "error": "Target parameter is required"
             }), 400
 
-        command = f"nuclei -u {target}"
+        command = f"nuclei -u {target} -t /opt/hexstrike/templates -duc"
 
         if severity:
             command += f" -severity {severity}"
@@ -11038,7 +11044,7 @@ def sqlmap():
                 "error": "URL parameter is required"
             }), 400
 
-        command = f"sqlmap -u {url} --batch"
+        command = f"sqlmap -u {url} --batch --crawl=2 --forms"
 
         if data:
             command += f" --data=\"{data}\""
@@ -13144,53 +13150,76 @@ def dalfox():
 
 @app.route("/api/tools/httpx", methods=["POST"])
 def httpx():
-    """Execute httpx for fast HTTP probing and technology detection"""
+    """Probe one HTTP endpoint without relying on the conflicting httpx CLI."""
     try:
-        params = request.json
-        target = params.get("target", "")
-        probe = params.get("probe", True)
+        params = request.json or {}
+        target = (params.get("target") or "").strip()
         tech_detect = params.get("tech_detect", False)
-        status_code = params.get("status_code", False)
-        content_length = params.get("content_length", False)
-        title = params.get("title", False)
-        web_server = params.get("web_server", False)
-        threads = params.get("threads", 50)
-        additional_args = params.get("additional_args", "")
+        include_content_length = params.get("content_length", False)
+        include_title = params.get("title", False)
+        include_web_server = params.get("web_server", False)
 
         if not target:
             logger.warning("🌐 httpx called without target parameter")
             return jsonify({"error": "Target parameter is required"}), 400
 
-        command = f"httpx -l {target} -t {threads}"
+        url = target if target.lower().startswith(("http://", "https://")) else f"http://{target}"
+        logger.info(f"🌍 Starting HTTP probe: {url}")
+        response = requests.get(
+            url,
+            timeout=10,
+            allow_redirects=False,
+            headers={"User-Agent": "Threshold-HTTP-Probe/1.0"},
+            stream=True,
+        )
+        body = bytearray()
+        for chunk in response.iter_content(chunk_size=65536):
+            if not chunk:
+                continue
+            body.extend(chunk[: max(0, 524288 - len(body))])
+            if len(body) >= 524288:
+                break
 
-        if probe:
-            command += " -probe"
-
-        if tech_detect:
-            command += " -tech-detect"
-
-        if status_code:
-            command += " -sc"
-
-        if content_length:
-            command += " -cl"
-
-        if title:
-            command += " -title"
-
-        if web_server:
-            command += " -server"
-
-        if additional_args:
-            command += f" {additional_args}"
-
-        logger.info(f"🌍 Starting httpx probe: {target}")
-        result = execute_command(command)
-        logger.info(f"📊 httpx probe completed for {target}")
-        return jsonify(result)
+        body_text = bytes(body).decode(response.encoding or "utf-8", errors="replace")
+        title_match = re.search(
+            r"<title\b[^>]*>(.*?)</title\s*>",
+            body_text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        page_title = (
+            re.sub(r"\s+", " ", title_match.group(1)).strip()
+            if title_match
+            else ""
+        )
+        fields = [f"{url} [{response.status_code}]"]
+        if include_title and page_title:
+            fields.append(f'title="{page_title}"')
+        if include_content_length:
+            fields.append(f"content_length={response.headers.get('Content-Length', len(body))}")
+        if tech_detect or include_web_server:
+            for header in ("Server", "X-Powered-By"):
+                value = response.headers.get(header)
+                if value:
+                    fields.append(f"{header.lower()}={value}")
+        response.close()
+        logger.info(f"📊 HTTP probe completed for {url}")
+        return jsonify({
+            "success": True,
+            "return_code": 0,
+            "stdout": " ".join(fields),
+            "stderr": "",
+            "status_code": response.status_code,
+            "url": url,
+            "title": page_title,
+        })
     except Exception as e:
         logger.error(f"💥 Error in httpx endpoint: {str(e)}")
-        return jsonify({"error": f"Server error: {str(e)}"}), 500
+        return jsonify({
+            "success": False,
+            "return_code": 1,
+            "stdout": "",
+            "stderr": str(e),
+        }), 200
 
 @app.route("/api/tools/anew", methods=["POST"])
 def anew():

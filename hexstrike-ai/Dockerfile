@@ -66,6 +66,7 @@ COPY requirements.txt /opt/hexstrike/requirements.txt
 RUN python3.13 -m pip install --no-cache-dir --break-system-packages --ignore-installed \
       -r requirements.txt
 COPY hexstrike_server.py /opt/hexstrike/hexstrike_server.py
+COPY templates/ /opt/hexstrike/templates/
 
 EXPOSE 8888
 HEALTHCHECK --interval=10s --timeout=5s --retries=18 --start-period=30s \
